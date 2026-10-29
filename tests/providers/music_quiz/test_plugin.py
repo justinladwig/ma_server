@@ -6031,8 +6031,13 @@ async def test_title_reveal_hides_the_title_until_hints_and_reveal() -> None:
     assert public_round["mask"] == ["H", None, None, " ", None, None, None, None]
     assert public_round["revealed_count"] == 1
 
-    await plugin.submit_answer(player_ids["Alice"], {"answer_type": "hint_text", "text": "hey jud"})
-    await plugin.submit_answer(player_ids["Bob"], {"answer_type": "hint_text", "text": "Hey Joe"})
+    await plugin.submit_answer(
+        player_ids["Alice"],
+        {"answer_type": "hint_text", "action": "guess_title", "text": "hey jud"},
+    )
+    await plugin.submit_answer(
+        player_ids["Bob"], {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Joe"}
+    )
     bob_state = await plugin.get_player_state(player_ids["Bob"])
     assert bob_state["you"]["solved"] is False
     assert bob_state["you"]["guesses"] == [{"text": "Hey Joe", "correct": False, "close": True}]
@@ -6041,7 +6046,8 @@ async def test_title_reveal_hides_the_title_until_hints_and_reveal() -> None:
 
     with patch("time.time", return_value=time.time() + 1):
         await plugin.submit_answer(
-            player_ids["Bob"], {"answer_type": "hint_text", "text": "Hey Jude"}
+            player_ids["Bob"],
+            {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"},
         )
 
     assert _phase(plugin) == MusicQuizPhase.REVEAL
@@ -6091,3 +6097,44 @@ async def test_title_reveal_rejects_unknown_settings(argument: str, value: str) 
         )
 
     assert plugin._game is None
+
+
+@pytest.mark.asyncio
+async def test_title_reveal_waits_for_the_artist_bonus_before_revealing() -> None:
+    """Keep the round open after every title is solved until the artist bonus is answered."""
+    plugin = _create_plugin()
+
+    def _artist_round(round_index: int, previous_rounds: list[MusicQuizRound]) -> MusicQuizRound:
+        game_round = _make_title_reveal_round(round_index, previous_rounds)
+        assert isinstance(game_round.answer_state, HintTextRoundState)
+        game_round.answer_state.artist_answers = ["The Beatles"]
+        game_round.answer_state.artist_label = "The Beatles"
+        return game_round
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.title_reveal."
+        "TitleRevealQuizType.prepare_round",
+        new=AsyncMock(side_effect=_artist_round),
+    ):
+        await plugin.create_game(
+            quiz_type="title_reveal",
+            round_count=1,
+            source_uris=["library://playlist/1"],
+            artist_bonus_mode="free_text",
+        )
+        player_id = (await plugin.join_game("Alice"))["player_id"]
+        await plugin.start_game()
+
+    await plugin.submit_answer(
+        player_id, {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude"}
+    )
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert _broadcast_states(plugin)[-1]["current_round"]["artist_bonus"] is True
+
+    state = await plugin.submit_answer(
+        player_id, {"answer_type": "hint_text", "action": "guess_artist", "text": "Beatles"}
+    )
+
+    assert _phase(plugin) == MusicQuizPhase.REVEAL
+    assert state["you"]["artist_bonus"]["done"] is True
+    assert _broadcast_states(plugin)[-1]["artist_bonus_mode"] == "free_text"

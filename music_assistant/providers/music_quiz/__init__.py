@@ -7,7 +7,8 @@ guess-the-song uses multiple-choice answers, while Music Timeline uses a shared
 chronological timeline with optional artist and title bonuses. Trivia uses
 AI-worded multiple-choice questions grounded in selected library metadata.
 Title Reveal uses free-text guesses against the song title, whose letters are
-uncovered one by one while the song plays.
+uncovered one by one while the song plays, with a bonus for the first correct
+guess and an optional artist bonus once the title is solved.
 
 Playback is hosted by a SharedPlaybackSession in one of two modes selected for
 each game:

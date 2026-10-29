@@ -1,4 +1,9 @@
-"""Hint-text answer strategy for Music Quiz: free-text guesses against a revealing mask."""
+"""
+Hint-text answer strategy for Music Quiz: free-text guesses against a revealing mask.
+
+Players guess the title as often as they like until it is right. The first correct guess
+earns a bonus, and rounds with an artist bonus then offer a single artist guess.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,10 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizTooManyAttemptsError,
 )
 from music_assistant.providers.music_quiz.hints import build_mask, is_hidden_character
-from music_assistant.providers.music_quiz.matching import compare_hint_guess
+from music_assistant.providers.music_quiz.matching import (
+    compare_free_text_answer,
+    compare_hint_guess,
+)
 from music_assistant.providers.music_quiz.models import (
     HintTextAttempt,
     HintTextRoundState,
@@ -39,14 +47,29 @@ from music_assistant.providers.music_quiz.scoring import (
 MAX_GUESS_LENGTH = 200
 MAX_ATTEMPTS_PER_ROUND = 30
 MIN_GUESS_INTERVAL_SECONDS = 0.5
+FIRST_SOLVER_BONUS = 200
+# matches the Music Timeline artist bonus
+ARTIST_BONUS_POINTS = 250
+
+ACTION_GUESS_TITLE = "guess_title"
+ACTION_GUESS_ARTIST = "guess_artist"
+ACTION_SKIP_ARTIST = "skip_artist"
 
 
 @dataclass(frozen=True, slots=True)
 class HintTextSubmission(QuizAnswerSubmission):
-    """A validated free-text guess."""
+    """A validated free-text title guess."""
 
     answer_type: ClassVar[MusicQuizAnswerType] = MusicQuizAnswerType.HINT_TEXT
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class HintTextArtistSubmission(QuizAnswerSubmission):
+    """A validated artist bonus guess, or a skipped bonus when text is None."""
+
+    answer_type: ClassVar[MusicQuizAnswerType] = MusicQuizAnswerType.HINT_TEXT
+    text: str | None
 
 
 class HintTextAnswerType(QuizAnswerType):
@@ -56,16 +79,25 @@ class HintTextAnswerType(QuizAnswerType):
 
     def parse_submission(self, payload: Mapping[str, object]) -> QuizAnswerSubmission:
         """
-        Parse a free-text guess.
+        Parse a title guess, an artist guess or a skipped artist bonus.
 
         :param payload: Raw JSON object submitted by a player.
-        :return: A validated free-text guess.
+        :return: A validated hint-text submission.
         """
-        if payload.keys() != {"answer_type", "text"}:
-            raise MusicQuizInvalidAnswerError("Hint-text submissions require answer_type and text")
-        answer_type = payload["answer_type"]
+        answer_type = payload.get("answer_type")
         if not isinstance(answer_type, str) or answer_type != self.answer_type:
             raise MusicQuizInvalidAnswerError("Answer type must be hint_text")
+        action = payload.get("action")
+        if action == ACTION_SKIP_ARTIST:
+            if payload.keys() != {"answer_type", "action"}:
+                raise MusicQuizInvalidAnswerError("Skipping the artist bonus takes no text")
+            return HintTextArtistSubmission(text=None)
+        if action not in (ACTION_GUESS_TITLE, ACTION_GUESS_ARTIST):
+            raise MusicQuizInvalidAnswerError("Unknown hint-text action")
+        if payload.keys() != {"answer_type", "action", "text"}:
+            raise MusicQuizInvalidAnswerError(
+                "Hint-text guesses require answer_type, action and text"
+            )
         text = payload["text"]
         if not isinstance(text, str):
             raise MusicQuizInvalidAnswerError("Guess must be a string")
@@ -74,6 +106,8 @@ class HintTextAnswerType(QuizAnswerType):
             raise MusicQuizInvalidAnswerError(
                 f"Guess must contain between 1 and {MAX_GUESS_LENGTH} characters"
             )
+        if action == ACTION_GUESS_ARTIST:
+            return HintTextArtistSubmission(text=text)
         return HintTextSubmission(text=text)
 
     def validate_round(self, game: MusicQuizGame, state: QuizRoundAnswerState) -> None:
@@ -131,15 +165,18 @@ class HintTextAnswerType(QuizAnswerType):
         submitted_at: float,
     ) -> None:
         """
-        Check a player's guess, locking the player once they guessed correctly.
+        Check a player's title or artist guess.
 
         :param game: Game receiving the submission.
         :param state: Current round answer state.
         :param player: Player submitting the answer.
-        :param submission: Validated free-text guess.
+        :param submission: Validated hint-text submission.
         :param submitted_at: Server timestamp of the submission.
         """
         hint_state = self._get_state(state)
+        if isinstance(submission, HintTextArtistSubmission):
+            self._submit_artist(hint_state, player, submission)
+            return
         if not isinstance(submission, HintTextSubmission):
             raise MusicQuizInvalidAnswerError("Submission does not match the hint-text answer type")
         if player.player_id in hint_state.solves:
@@ -166,6 +203,9 @@ class HintTextAnswerType(QuizAnswerType):
             hint_state.solves[player.player_id] = HintTextSolve(
                 solved_at=submitted_at,
                 points=self._score(game, submitted_at),
+                first_bonus=0 if hint_state.solves else FIRST_SOLVER_BONUS,
+                # without an artist bonus there is nothing left to answer
+                artist_done=not hint_state.artist_answers,
             )
 
     def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
@@ -181,12 +221,13 @@ class HintTextAnswerType(QuizAnswerType):
 
     def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
-        Return whether a player guessed correctly.
+        Return whether a player guessed the title and answered or skipped the artist bonus.
 
         :param state: Round answer state to inspect.
         :param player_id: Player to inspect.
         """
-        return player_id in self._get_state(state).solves
+        solve = self._get_state(state).solves.get(player_id)
+        return solve is not None and solve.artist_done
 
     def is_round_complete(
         self,
@@ -194,14 +235,13 @@ class HintTextAnswerType(QuizAnswerType):
         active_players: Collection[MusicQuizPlayer],
     ) -> bool:
         """
-        Return whether every active player guessed correctly.
+        Return whether every active player guessed the title and finished the artist bonus.
 
         :param state: Round answer state to inspect.
         :param active_players: Players eligible for the round.
         """
-        hint_state = self._get_state(state)
         return bool(active_players) and all(
-            player.player_id in hint_state.solves for player in active_players
+            self.is_player_complete(state, player.player_id) for player in active_players
         )
 
     def reveal(self, game: MusicQuizGame, state: QuizRoundAnswerState) -> float | None:
@@ -215,7 +255,7 @@ class HintTextAnswerType(QuizAnswerType):
         hint_state = self._get_state(state)
         for player_id, solve in hint_state.solves.items():
             if player := game.players.get(player_id):
-                player.score += solve.points
+                player.score += solve.total_points
         return max(
             (
                 attempt.submitted_at
@@ -259,8 +299,18 @@ class HintTextAnswerType(QuizAnswerType):
                 ]
                 for player_id, attempts in hint_state.attempts.items()
             },
+            "artist_answers": list(hint_state.artist_answers),
             "solves": {
-                player_id: {"solved_at": solve.solved_at, "points": solve.points}
+                player_id: {
+                    "solved_at": solve.solved_at,
+                    "points": solve.points,
+                    "first_bonus": solve.first_bonus,
+                    "artist_done": solve.artist_done,
+                    "artist_guess": solve.artist_guess,
+                    "artist_correct": solve.artist_correct,
+                    "artist_points": solve.artist_points,
+                    "total_points": solve.total_points,
+                }
                 for player_id, solve in hint_state.solves.items()
             },
         }
@@ -288,6 +338,7 @@ class HintTextAnswerType(QuizAnswerType):
             "next_hint_at": next_hint_at,
             "allowed_typos": hint_state.allowed_typos,
             "solved_count": len(hint_state.solves),
+            "artist_bonus": bool(hint_state.artist_answers),
         }
         if revealed:
             serialized_state["solution"] = hint_state.solution
@@ -318,7 +369,9 @@ class HintTextAnswerType(QuizAnswerType):
         if revealed:
             serialized_state["last_answer"] = {
                 "correct": solve is not None,
-                "points": solve.points if solve else 0,
+                "points": solve.total_points if solve else 0,
+                "first_bonus": solve.first_bonus if solve else 0,
+                "artist_correct": solve.artist_correct if solve else False,
                 "attempt_count": len(hint_state.attempts.get(player_id, [])),
             }
         return serialized_state
@@ -353,8 +406,45 @@ class HintTextAnswerType(QuizAnswerType):
         if solve is not None:
             # a player who guessed correctly already knows the title
             serialized_state["solution"] = hint_state.solution
-            serialized_state["points"] = solve.points
+            serialized_state["points"] = solve.total_points
+            serialized_state["title_points"] = solve.points
+            serialized_state["first_bonus"] = solve.first_bonus
+            if hint_state.artist_answers:
+                artist_bonus: dict[str, SerializableType] = {"done": solve.artist_done}
+                if solve.artist_done:
+                    # the artist is only shown once the player can no longer change the guess
+                    artist_bonus.update(
+                        guess=solve.artist_guess,
+                        correct=solve.artist_correct,
+                        points=solve.artist_points,
+                        artist=hint_state.artist_label,
+                    )
+                serialized_state["artist_bonus"] = artist_bonus
         return serialized_state
+
+    @staticmethod
+    def _submit_artist(
+        hint_state: HintTextRoundState,
+        player: MusicQuizPlayer,
+        submission: HintTextArtistSubmission,
+    ) -> None:
+        """Apply a player's single artist guess, or a skipped artist bonus."""
+        if not hint_state.artist_answers:
+            raise MusicQuizInvalidAnswerError("This round has no artist bonus")
+        solve = hint_state.solves.get(player.player_id)
+        if solve is None:
+            raise MusicQuizInvalidAnswerError("Guess the title before the artist")
+        if solve.artist_done:
+            raise MusicQuizAlreadyAnsweredError("Player already answered the artist bonus")
+        solve.artist_done = True
+        if submission.text is None:
+            return
+        solve.artist_guess = submission.text
+        solve.artist_correct = any(
+            compare_free_text_answer(submission.text, answer)
+            for answer in hint_state.artist_answers
+        )
+        solve.artist_points = ARTIST_BONUS_POINTS if solve.artist_correct else 0
 
     @staticmethod
     def _mask(hint_state: HintTextRoundState, *, revealed: bool) -> list[SerializableType]:

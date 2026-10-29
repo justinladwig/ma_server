@@ -29,7 +29,10 @@ from music_assistant.providers.music_quiz.models import (
     TitleRevealHintSpeed,
     TitleRevealTypoTolerance,
 )
-from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    QuizType,
+    get_track_artist_answers,
+)
 from music_assistant.providers.music_quiz.scoring import round_answer_window
 from music_assistant.providers.music_quiz.suggestions import build_answer_label
 
@@ -53,6 +56,8 @@ class TitleRevealQuizType(QuizType):
         """
         Remove configuration fields that do not apply to title reveal.
 
+        The artist bonus mode is kept, title reveal supports it as a free-text bonus.
+
         :param config: Raw typed game configuration.
         :return: Configuration to persist for this quiz type.
         """
@@ -61,7 +66,6 @@ class TitleRevealQuizType(QuizType):
             difficulty=MusicQuizDifficulty.NORMAL.value,
             language=DEFAULT_TRIVIA_LANGUAGE,
             play_reveal_audio=True,
-            artist_bonus_mode=TimelineBonusMode.OFF,
             title_bonus_mode=TimelineBonusMode.OFF,
         )
 
@@ -85,6 +89,12 @@ class TitleRevealQuizType(QuizType):
                 translation_key="music_quiz_invalid_typo_tolerance",
                 translation_owner=TRANSLATION_OWNER,
             )
+        if config.artist_bonus_mode not in (TimelineBonusMode.OFF, TimelineBonusMode.FREE_TEXT):
+            raise InvalidDataError(
+                "Title Reveal supports only a free-text artist bonus",
+                translation_key="music_quiz_invalid_bonus_mode",
+                translation_owner=TRANSLATION_OWNER,
+            )
         if not config.source_uris:
             raise InvalidDataError(
                 "At least one source URI is required",
@@ -103,6 +113,7 @@ class TitleRevealQuizType(QuizType):
             **super().serialize_game_config(game),
             "hint_speed": game.config.hint_speed.value,
             "typo_tolerance": game.config.typo_tolerance.value,
+            "artist_bonus_mode": game.config.artist_bonus_mode.value,
         }
 
     async def prepare_round(
@@ -127,6 +138,11 @@ class TitleRevealQuizType(QuizType):
             0.0,
         )
         artist_name = track.artists[0].name if track.artists else None
+        artist_answers = (
+            get_track_artist_answers(track)
+            if self.config.artist_bonus_mode == TimelineBonusMode.FREE_TEXT
+            else []
+        )
         return MusicQuizRound(
             round_index=round_index,
             track_uri=track.uri,
@@ -142,6 +158,8 @@ class TitleRevealQuizType(QuizType):
                     hint_count(len(reveal_order), self.config.hint_speed),
                     audible_window,
                 ),
+                artist_answers=artist_answers,
+                artist_label=track.artist_str if artist_answers else None,
             ),
             image_url=await self.mass.metadata.get_image_url_for_item(track),
             duration=track.duration,

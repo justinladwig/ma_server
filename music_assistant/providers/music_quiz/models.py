@@ -117,7 +117,8 @@ class MusicQuizConfig(DataClassDictMixin):
     # trivia specific; other quiz types ignore this
     language: str = DEFAULT_TRIVIA_LANGUAGE
     play_reveal_audio: bool = True
-    # timeline specific; other answer types ignore these
+    # timeline specific, artist_bonus_mode also enables the title-reveal artist bonus;
+    # other answer types ignore these
     artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     # title-reveal specific; other quiz types ignore these
@@ -418,7 +419,19 @@ class HintTextSolve(DataClassDictMixin):
     """A player's correct guess in a hint-text round."""
 
     solved_at: float
+    # time-based points of the title guess, without the bonuses below
     points: int
+    first_bonus: int = 0
+    # the artist bonus is offered once the title is solved; done once answered or skipped
+    artist_done: bool = False
+    artist_guess: str | None = None
+    artist_correct: bool = False
+    artist_points: int = 0
+
+    @property
+    def total_points(self) -> int:
+        """Return the points of the title guess including all bonuses."""
+        return self.points + self.first_bonus + self.artist_points
 
     class Config(BaseConfig):
         """Mashumaro configuration."""
@@ -442,6 +455,9 @@ class HintTextRoundState(QuizRoundAnswerState):
     reveal_order: list[int]
     # seconds after the track became audible at which each hint is uncovered
     hint_offsets: list[float]
+    # accepted artist names; empty when the round offers no artist bonus
+    artist_answers: list[str] = field(default_factory=list)
+    artist_label: str | None = None
     hint_times: list[float] = field(default_factory=list)
     revealed_count: int = 0
     attempts: dict[str, list[HintTextAttempt]] = field(default_factory=dict)

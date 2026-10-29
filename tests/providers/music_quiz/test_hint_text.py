@@ -6,9 +6,12 @@ import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz.answer_types.hint_text import (
+    ARTIST_BONUS_POINTS,
+    FIRST_SOLVER_BONUS,
     MAX_ATTEMPTS_PER_ROUND,
     MAX_GUESS_LENGTH,
     HintTextAnswerType,
+    HintTextArtistSubmission,
     HintTextSubmission,
 )
 from music_assistant.providers.music_quiz.constants import ASSUMED_AUDIO_START_LATENCY
@@ -31,14 +34,16 @@ ANSWER_TYPE = HintTextAnswerType()
 STARTED_AT = 100.0
 
 
-def _state() -> HintTextRoundState:
-    """Return hint-text round state for "Hey Jude"."""
+def _state(*, artist_bonus: bool = False) -> HintTextRoundState:
+    """Return hint-text round state for "Hey Jude", optionally with the artist bonus."""
     return HintTextRoundState(
         solution="Hey Jude",
         accepted_answers=["heyjude"],
         allowed_typos=1,
         reveal_order=[0, 4, 1, 5, 2, 6, 7],
         hint_offsets=[5.0, 10.0, 15.0],
+        artist_answers=["The Beatles"] if artist_bonus else [],
+        artist_label="The Beatles" if artist_bonus else None,
     )
 
 
@@ -78,23 +83,54 @@ def _guess(game: MusicQuizGame, player_id: str, text: str, at: float) -> None:
     )
 
 
+def _guess_artist(game: MusicQuizGame, player_id: str, text: str | None) -> None:
+    """Submit an artist guess for a player, or skip the bonus when text is None."""
+    ANSWER_TYPE.submit(
+        game,
+        game.rounds[0].answer_state,
+        game.players[player_id],
+        HintTextArtistSubmission(text=text),
+        STARTED_AT + 20.0,
+    )
+
+
 def test_parse_submission_collapses_whitespace() -> None:
     """Parse the wire payload into a typed guess with normalized spacing."""
-    submission = ANSWER_TYPE.parse_submission({"answer_type": "hint_text", "text": "  Hey   Jude "})
+    submission = ANSWER_TYPE.parse_submission(
+        {"answer_type": "hint_text", "action": "guess_title", "text": "  Hey   Jude "}
+    )
 
     assert submission == HintTextSubmission(text="Hey Jude")
+
+
+def test_parse_submission_reads_artist_guesses_and_skips() -> None:
+    """Parse artist guesses and skipped artist bonuses into their own submission type."""
+    guess = ANSWER_TYPE.parse_submission(
+        {"answer_type": "hint_text", "action": "guess_artist", "text": "The Beatles"}
+    )
+    skip = ANSWER_TYPE.parse_submission({"answer_type": "hint_text", "action": "skip_artist"})
+
+    assert guess == HintTextArtistSubmission(text="The Beatles")
+    assert skip == HintTextArtistSubmission(text=None)
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"text": "Hey Jude"},
-        {"answer_type": "hint_text"},
-        {"answer_type": "multiple_choice", "text": "Hey Jude"},
-        {"answer_type": "hint_text", "text": 1},
-        {"answer_type": "hint_text", "text": "   "},
-        {"answer_type": "hint_text", "text": "a" * (MAX_GUESS_LENGTH + 1)},
-        {"answer_type": "hint_text", "text": "Hey Jude", "extra": True},
+        {"action": "guess_title", "text": "Hey Jude"},
+        {"answer_type": "hint_text", "text": "Hey Jude"},
+        {"answer_type": "hint_text", "action": "guess_title"},
+        {"answer_type": "hint_text", "action": "dance", "text": "Hey Jude"},
+        {"answer_type": "multiple_choice", "action": "guess_title", "text": "Hey Jude"},
+        {"answer_type": "hint_text", "action": "guess_title", "text": 1},
+        {"answer_type": "hint_text", "action": "guess_title", "text": "   "},
+        {
+            "answer_type": "hint_text",
+            "action": "guess_title",
+            "text": "a" * (MAX_GUESS_LENGTH + 1),
+        },
+        {"answer_type": "hint_text", "action": "guess_title", "text": "Hey Jude", "extra": 1},
+        {"answer_type": "hint_text", "action": "skip_artist", "text": "The Beatles"},
     ],
 )
 def test_parse_submission_rejects_malformed_payload(payload: dict[str, object]) -> None:
@@ -185,13 +221,67 @@ def test_earlier_correct_guesses_score_more_points() -> None:
     assert ANSWER_TYPE.is_round_complete(state, players) is True
 
     assert ANSWER_TYPE.reveal(game, state) == STARTED_AT + 16.0
-    assert game.players["alice"].score == 1000
+    assert game.players["alice"].score == 1000 + FIRST_SOLVER_BONUS
     assert game.players["bob"].score == 550
     assert ANSWER_TYPE.serialize_public_player(state, "bob", revealed=True) == {
         "answered": True,
         "solved_rank": 2,
-        "last_answer": {"correct": True, "points": 550, "attempt_count": 1},
+        "last_answer": {
+            "correct": True,
+            "points": 550,
+            "first_bonus": 0,
+            "artist_correct": False,
+            "attempt_count": 1,
+        },
     }
+
+
+def test_artist_bonus_is_one_guess_after_the_title() -> None:
+    """Offer one artist guess after the title and keep the round open until it is answered."""
+    state = _state(artist_bonus=True)
+    game = _game(state)
+    players = list(game.players.values())
+
+    with pytest.raises(MusicQuizInvalidAnswerError):
+        _guess_artist(game, "alice", "The Beatles")
+    _guess(game, "alice", "Hey Jude", STARTED_AT + ASSUMED_AUDIO_START_LATENCY)
+    _guess(game, "bob", "Hey Jude", STARTED_AT + 16.0)
+
+    personal = ANSWER_TYPE.serialize_personal_player(state, "alice", revealed=False)
+    assert personal["artist_bonus"] == {"done": False}
+    assert ANSWER_TYPE.is_round_complete(state, players) is False
+
+    _guess_artist(game, "alice", "the beatls")
+    _guess_artist(game, "bob", None)
+    with pytest.raises(MusicQuizAlreadyAnsweredError):
+        _guess_artist(game, "alice", "The Beatles")
+
+    assert ANSWER_TYPE.is_round_complete(state, players) is True
+    personal = ANSWER_TYPE.serialize_personal_player(state, "alice", revealed=False)
+    assert personal["artist_bonus"] == {
+        "done": True,
+        "guess": "the beatls",
+        "correct": True,
+        "points": ARTIST_BONUS_POINTS,
+        "artist": "The Beatles",
+    }
+    assert personal["points"] == 1000 + FIRST_SOLVER_BONUS + ARTIST_BONUS_POINTS
+    ANSWER_TYPE.reveal(game, state)
+    assert game.players["alice"].score == 1000 + FIRST_SOLVER_BONUS + ARTIST_BONUS_POINTS
+    assert game.players["bob"].score == 550
+
+
+def test_artist_guess_is_refused_without_artist_bonus() -> None:
+    """Refuse artist guesses in rounds without the artist bonus."""
+    state = _state()
+    game = _game(state)
+    _guess(game, "alice", "Hey Jude", 102.0)
+
+    with pytest.raises(MusicQuizInvalidAnswerError):
+        _guess_artist(game, "alice", "The Beatles")
+    assert "artist_bonus" not in ANSWER_TYPE.serialize_personal_player(
+        state, "alice", revealed=False
+    )
 
 
 def test_remove_player_drops_guesses() -> None:
