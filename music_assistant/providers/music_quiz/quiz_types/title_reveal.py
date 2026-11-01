@@ -17,6 +17,7 @@ from music_assistant.providers.music_quiz.hints import (
     clean_hint_title,
     hint_count,
     is_hint_title_usable,
+    strip_emoji,
 )
 from music_assistant.providers.music_quiz.matching import allowed_typos, normalize_guess
 from music_assistant.providers.music_quiz.models import (
@@ -198,7 +199,7 @@ class TitleRevealQuizType(QuizType):
 
 def _accepted_answers(track: Track, solution: str) -> list[str]:
     """Return the normalized answers accepted for a track, the shown solution first."""
-    search_title, _ = parse_title_and_version(track.name, strip_for_search=True)
+    search_title, _ = parse_title_and_version(strip_emoji(track.name), strip_for_search=True)
     return [
         answer
         for answer in dict.fromkeys(normalize_guess(title) for title in (solution, search_title))

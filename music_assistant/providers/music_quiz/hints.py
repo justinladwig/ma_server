@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import random
+import re
+import unicodedata
 from itertools import zip_longest
 
 from music_assistant.helpers.util import parse_title_and_version
@@ -15,6 +17,12 @@ MAX_HINT_TITLE_LENGTH = 60
 # and the last one lands before the deadline so it can still help
 FIRST_HINT_FRACTION = 0.2
 LAST_HINT_FRACTION = 0.85
+# a keycap emoji (1️⃣, #️⃣) carries a real digit or sign, so it is removed as a whole
+KEYCAP_EMOJI = re.compile("[0-9#*]\ufe0f?\u20e3")
+# emoji glue: zero-width joiner, variation selectors, combining keycap and skin tones
+EMOJI_COMPONENTS = re.compile("[\u200d\ufe0e\ufe0f\u20e3\U0001f3fb-\U0001f3ff]")
+# space, hyphen, en and em dash, pipe, middle dot, bullet and colon
+EDGE_SEPARATORS = " -\u2013\u2014|\u00b7\u2022:"
 HINT_REVEAL_FRACTIONS: dict[TitleRevealHintSpeed, float] = {
     TitleRevealHintSpeed.SLOW: 0.4,
     TitleRevealHintSpeed.NORMAL: 0.6,
@@ -28,9 +36,21 @@ def clean_hint_title(title: str) -> str:
 
     :param title: Raw track title.
     """
-    clean_title, _ = parse_title_and_version(title)
+    clean_title, _ = parse_title_and_version(strip_emoji(title))
     clean_title, _ = parse_title_and_version(clean_title, strip_for_display=True)
     return " ".join(clean_title.split())
+
+
+def strip_emoji(text: str) -> str:
+    """
+    Return text without emoji and other pictographic symbols, which nobody can type as a guess.
+
+    :param text: Text to clean.
+    """
+    text = EMOJI_COMPONENTS.sub("", KEYCAP_EMOJI.sub("", text))
+    text = "".join(character for character in text if unicodedata.category(character) != "So")
+    # an emoji at either end can leave a dangling separator behind ("Song - 🔥")
+    return " ".join(text.split()).strip(EDGE_SEPARATORS)
 
 
 def is_hidden_character(character: str) -> bool:

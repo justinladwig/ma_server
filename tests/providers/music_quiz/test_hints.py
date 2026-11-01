@@ -15,6 +15,7 @@ from music_assistant.providers.music_quiz.hints import (
     hidden_positions,
     hint_count,
     is_hint_title_usable,
+    strip_emoji,
 )
 from music_assistant.providers.music_quiz.models import TitleRevealHintSpeed
 
@@ -28,6 +29,7 @@ from music_assistant.providers.music_quiz.models import TitleRevealHintSpeed
         ("Smells Like Teen Spirit [Live at Reading]", "Smells Like Teen Spirit"),
         ("(Don't Fear) The Reaper", "(Don't Fear) The Reaper"),
         ("Song 2 (2012 Remaster)", "Song 2"),
+        ("Fire 🔥 (Remastered 2011)", "Fire"),
     ],
 )
 def test_clean_hint_title_strips_version_suffixes(title: str, expected: str) -> None:
@@ -114,3 +116,29 @@ def test_hint_offsets_spread_evenly_after_a_grace_period() -> None:
 def test_is_hint_title_usable(title: str, usable: bool) -> None:
     """Skip titles that are too short or too long for a fair round."""
     assert is_hint_title_usable(title) is usable
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Fire 🔥", "Fire"),
+        ("❤️ Love Song", "Love Song"),
+        ("Party 🎉🎉 Time", "Party Time"),
+        ("Hey 👋🏽 You", "Hey You"),
+        ("👨\u200d👩\u200d👧 Family", "Family"),
+        ("🇩🇪 Deutschland", "Deutschland"),
+        ("1️⃣ Number", "Number"),
+        ("Song - 🔥", "Song"),
+        ("Star ★ Light", "Star Light"),
+        ("99 Luftballons", "99 Luftballons"),
+        ("Don't Stop - Live", "Don't Stop - Live"),
+    ],
+)
+def test_strip_emoji_removes_pictographs_and_their_glue(text: str, expected: str) -> None:
+    """Remove emoji, including joined and modified sequences, without touching real text."""
+    assert strip_emoji(text) == expected
+
+
+def test_emoji_only_title_is_not_usable() -> None:
+    """Skip a track whose title is nothing but emoji."""
+    assert is_hint_title_usable(clean_hint_title("🔥🔥🔥")) is False
