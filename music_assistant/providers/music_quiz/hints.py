@@ -23,6 +23,15 @@ KEYCAP_EMOJI = re.compile("[0-9#*]\ufe0f?\u20e3")
 EMOJI_COMPONENTS = re.compile("[\u200d\ufe0e\ufe0f\u20e3\U0001f3fb-\U0001f3ff]")
 # space, hyphen, en and em dash, pipe, middle dot, bullet and colon
 EDGE_SEPARATORS = " -\u2013\u2014|\u00b7\u2022:"
+# words that open a title suffix naming the release rather than the song, such as
+# "- From "Top Gun"", "- Love Theme from ..." or "[Recorded at ...]"; the shared title
+# parser keeps these because they matter for library matching
+SUFFIX_KEYWORDS = (
+    r"(?:(?:love |main )?theme from|music from|taken from|from|recorded (?:at|live|in)"
+    r"|live (?:at|from|in|on)|mono|stereo|demo|soundtrack|o\.?s\.?t\.?|aus (?:dem|der))"
+)
+DASH_SUFFIX = re.compile(rf"\s+[-\u2013\u2014]\s+{SUFFIX_KEYWORDS}\b.*$", re.IGNORECASE)
+BRACKET_SUFFIX = re.compile(rf"\s*[(\[]\s*{SUFFIX_KEYWORDS}\b[^)\]]*[)\]]\s*$", re.IGNORECASE)
 HINT_REVEAL_FRACTIONS: dict[TitleRevealHintSpeed, float] = {
     TitleRevealHintSpeed.SLOW: 0.4,
     TitleRevealHintSpeed.NORMAL: 0.6,
@@ -38,7 +47,21 @@ def clean_hint_title(title: str) -> str:
     """
     clean_title, _ = parse_title_and_version(strip_emoji(title))
     clean_title, _ = parse_title_and_version(clean_title, strip_for_display=True)
-    return " ".join(clean_title.split())
+    return " ".join(strip_release_suffixes(clean_title).split())
+
+
+def strip_release_suffixes(title: str) -> str:
+    """
+    Return a title without trailing suffixes that name its release, such as a soundtrack.
+
+    :param title: Title to clean.
+    """
+    while True:
+        stripped = BRACKET_SUFFIX.sub("", DASH_SUFFIX.sub("", title)).strip()
+        # a title that is nothing but such a suffix is kept as it is
+        if not stripped or stripped == title:
+            return title
+        title = stripped
 
 
 def strip_emoji(text: str) -> str:
