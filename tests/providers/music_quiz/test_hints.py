@@ -37,7 +37,6 @@ from music_assistant.providers.music_quiz.models import TitleRevealHintSpeed
         ("Song - Mono [From The Motion Picture]", "Song"),
         ("Song - Recorded at Spotify Studios NYC", "Song"),
         ("Song - Demo", "Song"),
-        ('Song - Aus dem Film "Der Schuh des Manitu"', "Song"),
         ("Rock - N - Roll", "Rock - N - Roll"),
         ("From Me to You", "From Me to You"),
         ("Theme from New York, New York", "Theme from New York, New York"),

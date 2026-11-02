@@ -28,7 +28,7 @@ EDGE_SEPARATORS = " -\u2013\u2014|\u00b7\u2022:"
 # parser keeps these because they matter for library matching
 SUFFIX_KEYWORDS = (
     r"(?:(?:love |main )?theme from|music from|taken from|from|recorded (?:at|live|in)"
-    r"|live (?:at|from|in|on)|mono|stereo|demo|soundtrack|o\.?s\.?t\.?|aus (?:dem|der))"
+    r"|live (?:at|from|in|on)|mono|stereo|demo|soundtrack|o\.?s\.?t\.?)"
 )
 DASH_SUFFIX = re.compile(rf"\s+[-\u2013\u2014]\s+{SUFFIX_KEYWORDS}\b.*$", re.IGNORECASE)
 BRACKET_SUFFIX = re.compile(rf"\s*[(\[]\s*{SUFFIX_KEYWORDS}\b[^)\]]*[)\]]\s*$", re.IGNORECASE)
