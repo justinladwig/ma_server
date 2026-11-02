@@ -8,7 +8,7 @@ import pytest
 
 from music_assistant.providers.music_quiz.hints import (
     MAX_HINT_TITLE_LENGTH,
-    build_hint_offsets,
+    build_hint_fractions,
     build_mask,
     build_reveal_order,
     clean_hint_title,
@@ -108,11 +108,11 @@ def test_hint_count_never_reveals_the_whole_title(
     assert hint_count(letter_count, speed) == expected
 
 
-def test_hint_offsets_spread_evenly_after_a_grace_period() -> None:
+def test_hint_fractions_spread_evenly_after_a_grace_period() -> None:
     """Hold back the first hint and reveal the last one before the deadline."""
-    assert build_hint_offsets(0, 30) == []
-    assert build_hint_offsets(1, 30) == [6.0]
-    assert build_hint_offsets(3, 30) == [6.0, 15.75, 25.5]
+    assert build_hint_fractions(0) == []
+    assert build_hint_fractions(1) == [0.2]
+    assert build_hint_fractions(3) == [0.2, 0.525, 0.85]
 
 
 @pytest.mark.parametrize(

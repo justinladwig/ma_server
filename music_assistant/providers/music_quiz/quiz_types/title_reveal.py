@@ -9,10 +9,9 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.providers.music_quiz.constants import ASSUMED_AUDIO_START_LATENCY
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.hints import (
-    build_hint_offsets,
+    build_hint_fractions,
     build_reveal_order,
     clean_hint_title,
     hint_count,
@@ -27,14 +26,11 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizDifficulty,
     MusicQuizRound,
     TimelineBonusMode,
-    TitleRevealHintSpeed,
-    TitleRevealTypoTolerance,
 )
 from music_assistant.providers.music_quiz.quiz_types.base import (
     QuizType,
     get_track_artist_answers,
 )
-from music_assistant.providers.music_quiz.scoring import round_answer_window
 from music_assistant.providers.music_quiz.suggestions import build_answer_label
 
 if TYPE_CHECKING:
@@ -50,7 +46,6 @@ class TitleRevealQuizType(QuizType):
     """Quiz type where players type the playing song's title as its letters are revealed."""
 
     answer_type = MusicQuizAnswerType.HINT_TEXT
-    prefetch_lyrics = True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -78,18 +73,6 @@ class TitleRevealQuizType(QuizType):
         :param config: Configuration to validate.
         """
         super().validate_config(config)
-        if config.hint_speed not in set(TitleRevealHintSpeed):
-            raise InvalidDataError(
-                f"Unknown hint speed: {config.hint_speed}",
-                translation_key="music_quiz_invalid_hint_speed",
-                translation_owner=TRANSLATION_OWNER,
-            )
-        if config.typo_tolerance not in set(TitleRevealTypoTolerance):
-            raise InvalidDataError(
-                f"Unknown typo tolerance: {config.typo_tolerance}",
-                translation_key="music_quiz_invalid_typo_tolerance",
-                translation_owner=TRANSLATION_OWNER,
-            )
         if config.artist_bonus_mode not in (TimelineBonusMode.OFF, TimelineBonusMode.FREE_TEXT):
             raise InvalidDataError(
                 "Title Reveal supports only a free-text artist bonus",
@@ -132,12 +115,6 @@ class TitleRevealQuizType(QuizType):
         assert track.uri is not None  # guaranteed by _get_next_source_track
         solution = clean_hint_title(track.name)
         reveal_order = build_reveal_order(solution, SYSTEM_RANDOM)
-        # hints are timed from the moment the track becomes audible, not the play command
-        audible_window = max(
-            round_answer_window(self.config.answer_duration, track.duration)
-            - ASSUMED_AUDIO_START_LATENCY,
-            0.0,
-        )
         artist_name = track.artists[0].name if track.artists else None
         artist_answers = (
             get_track_artist_answers(track)
@@ -155,9 +132,8 @@ class TitleRevealQuizType(QuizType):
                     len(normalize_guess(solution)), self.config.typo_tolerance
                 ),
                 reveal_order=reveal_order,
-                hint_offsets=build_hint_offsets(
-                    hint_count(len(reveal_order), self.config.hint_speed),
-                    audible_window,
+                hint_fractions=build_hint_fractions(
+                    hint_count(len(reveal_order), self.config.hint_speed)
                 ),
                 artist_answers=artist_answers,
                 artist_label=track.artist_str if artist_answers else None,

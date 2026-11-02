@@ -72,12 +72,14 @@ class QuizAnswerType(ABC):
         self,
         state: QuizRoundAnswerState,
         audio_started_at: float,
+        deadline: float,
     ) -> list[float]:
         """
         Open a started round and return the timestamps at which its hints are due.
 
         :param state: Answer state of the round that started.
         :param audio_started_at: Expected timestamp at which the round's track became audible.
+        :param deadline: Timestamp at which the round stops accepting answers.
         """
         return []
 

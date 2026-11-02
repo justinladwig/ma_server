@@ -43,7 +43,7 @@ def compare_free_text_answer(submitted: str, expected: str) -> bool:
         return False
     shortest_length = min(len(submitted_safe), len(expected_safe))
     max_distance = 0 if shortest_length < 5 else 1 if shortest_length < 13 else 2
-    return within_edit_distance(submitted_safe, expected_safe, max_distance)
+    return _within_edit_distance(submitted_safe, expected_safe, max_distance)
 
 
 def normalize_guess(text: str) -> str:
@@ -62,13 +62,13 @@ def allowed_typos(letter_count: int, tolerance: TitleRevealTypoTolerance) -> int
     :param letter_count: Number of comparable characters in the answer.
     :param tolerance: Typo tolerance selected for the game.
     """
+    # even a lenient game cannot accept a typo in a one- or two-letter answer
+    if letter_count < MIN_TYPO_LETTER_COUNT:
+        return 0
     budget = next(
         (typos for upper_bound, typos in TYPO_BUDGET_STEPS if letter_count < upper_bound),
         MAX_TYPO_BUDGET,
     )
-    # even a lenient game cannot accept a typo in a one- or two-letter answer
-    if letter_count < MIN_TYPO_LETTER_COUNT:
-        return 0
     return max(budget + TYPO_TOLERANCE_OFFSETS[tolerance], 0)
 
 
@@ -86,22 +86,16 @@ def compare_hint_guess(
     submitted_safe = normalize_guess(submitted)
     if not submitted_safe:
         return False, False
-    if any(within_edit_distance(submitted_safe, answer, max_typos) for answer in accepted_answers):
+    if any(_within_edit_distance(submitted_safe, answer, max_typos) for answer in accepted_answers):
         return True, False
     is_close = any(
-        within_edit_distance(submitted_safe, answer, max_typos + 1) for answer in accepted_answers
+        _within_edit_distance(submitted_safe, answer, max_typos + 1) for answer in accepted_answers
     )
     return False, is_close
 
 
-def within_edit_distance(first: str, second: str, max_distance: int) -> bool:
-    """
-    Return whether two strings are within a bounded Levenshtein distance.
-
-    :param first: First string.
-    :param second: Second string.
-    :param max_distance: Maximum number of edits.
-    """
+def _within_edit_distance(first: str, second: str, max_distance: int) -> bool:
+    """Return whether two strings are within a bounded Levenshtein distance."""
     if abs(len(first) - len(second)) > max_distance:
         return False
     previous_row = list(range(len(second) + 1))

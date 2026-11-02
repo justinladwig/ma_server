@@ -139,20 +139,18 @@ def hint_count(letter_count: int, speed: TitleRevealHintSpeed) -> int:
     return min(math.floor(letter_count * HINT_REVEAL_FRACTIONS[speed]), letter_count - 1)
 
 
-def build_hint_offsets(count: int, answer_window: float) -> list[float]:
+def build_hint_fractions(count: int) -> list[float]:
     """
-    Return the evenly spread offsets, in seconds into the round, at which hints are revealed.
+    Return the evenly spread fractions of the answer window after which hints are revealed.
 
     :param count: Number of hints.
-    :param answer_window: Seconds the round is open for answers.
     """
     if count <= 0:
         return []
-    first = answer_window * FIRST_HINT_FRACTION
     if count == 1:
-        return [round(first, 3)]
-    step = (answer_window * LAST_HINT_FRACTION - first) / (count - 1)
-    return [round(first + step * index, 3) for index in range(count)]
+        return [FIRST_HINT_FRACTION]
+    step = (LAST_HINT_FRACTION - FIRST_HINT_FRACTION) / (count - 1)
+    return [round(FIRST_HINT_FRACTION + step * index, 4) for index in range(count)]
 
 
 def build_mask(title: str, revealed_positions: set[int]) -> list[str | None]:

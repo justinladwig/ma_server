@@ -43,6 +43,7 @@ from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
+    ASSUMED_AUDIO_START_LATENCY,
     CONF_AI_ENGINE,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
@@ -53,7 +54,6 @@ from music_assistant.providers.music_quiz import (
 )
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerSubmissionPayload
-from music_assistant.providers.music_quiz.constants import ASSUMED_AUDIO_START_LATENCY
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
     MusicQuizInvalidAnswerError,
@@ -5981,7 +5981,7 @@ def _make_title_reveal_round(
             accepted_answers=["heyjude"],
             allowed_typos=1,
             reveal_order=[0, 4, 1, 5, 2, 6, 7],
-            hint_offsets=[5.0, 10.0],
+            hint_fractions=[0.2, 0.4],
         ),
         duration=180.0,
     )
@@ -6021,10 +6021,11 @@ async def test_title_reveal_hides_the_title_until_hints_and_reveal() -> None:
     assert public_round["mask"] == [None, None, None, " ", None, None, None, None]
     assert "solution" not in public_round
     assert "Hey Jude" not in str(_broadcast_states(plugin))
-    assert public_round["next_hint_at"] is not None
 
     delay, invoke_hint, round_index = _round_timer_call(plugin, plugin._hint_timer_id)
-    assert delay == pytest.approx(5.0 + ASSUMED_AUDIO_START_LATENCY, abs=0.5)
+    # the first hint lands at 20% of the audible part of the 30 second answer window
+    expected_delay = ASSUMED_AUDIO_START_LATENCY + 0.2 * (30 - ASSUMED_AUDIO_START_LATENCY)
+    assert delay == pytest.approx(expected_delay, abs=0.5)
     await invoke_hint(round_index)
 
     public_round = _broadcast_states(plugin)[-1]["current_round"]
@@ -6131,9 +6132,10 @@ async def test_title_reveal_waits_for_the_artist_bonus_before_revealing() -> Non
     assert _phase(plugin) == MusicQuizPhase.ANSWERING
     assert _broadcast_states(plugin)[-1]["current_round"]["artist_bonus"] is True
 
-    state = await plugin.submit_answer(
+    await plugin.submit_answer(
         player_id, {"answer_type": "hint_text", "action": "guess_artist", "text": "Beatles"}
     )
+    state = await plugin.get_player_state(player_id)
 
     assert _phase(plugin) == MusicQuizPhase.REVEAL
     assert state["you"]["artist_bonus"]["done"] is True

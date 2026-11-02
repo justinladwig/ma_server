@@ -78,9 +78,9 @@ async def test_prepare_round_builds_a_masked_title_round() -> None:
     assert state.accepted_answers == ["bohemianrhapsody"]
     assert state.allowed_typos == 3
     assert len(state.reveal_order) == 16
-    assert len(state.hint_offsets) == 9
-    assert state.hint_offsets[0] == 6.0
-    assert state.hint_offsets[-1] == 25.5
+    assert len(state.hint_fractions) == 9
+    assert state.hint_fractions[0] == 0.2
+    assert state.hint_fractions[-1] == 0.85
     game = MusicQuizGame(
         config=quiz_type.config,
         quiz_type="title_reveal",

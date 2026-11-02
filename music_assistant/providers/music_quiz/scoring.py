@@ -39,16 +39,3 @@ def calculate_time_score(
         return max_points
     remaining_fraction = 1 - min(max(elapsed / answer_window, 0.0), 1.0)
     return round(min_points + (max_points - min_points) * remaining_fraction)
-
-
-def round_answer_window(answer_duration: float, track_duration: float | None) -> float:
-    """
-    Return the effective answering window of a round in seconds.
-
-    :param answer_duration: Configured answer duration.
-    :param track_duration: Duration of the round's track, if known.
-    """
-    answer_window = float(answer_duration)
-    if track_duration and track_duration > 0:
-        answer_window = min(answer_window, track_duration)
-    return answer_window

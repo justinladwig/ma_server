@@ -18,14 +18,13 @@ from music_assistant.providers.music_quiz.answer_types.base import (
     QuizAnswerSubmission,
     QuizAnswerType,
 )
-from music_assistant.providers.music_quiz.constants import ASSUMED_AUDIO_START_LATENCY
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizAlreadyAnsweredError,
     MusicQuizGuessTooFastError,
     MusicQuizInvalidAnswerError,
     MusicQuizTooManyAttemptsError,
 )
-from music_assistant.providers.music_quiz.hints import build_mask, is_hidden_character
+from music_assistant.providers.music_quiz.hints import build_mask, hidden_positions
 from music_assistant.providers.music_quiz.matching import (
     compare_free_text_answer,
     compare_hint_guess,
@@ -39,10 +38,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizPlayer,
     QuizRoundAnswerState,
 )
-from music_assistant.providers.music_quiz.scoring import (
-    calculate_time_score,
-    round_answer_window,
-)
+from music_assistant.providers.music_quiz.scoring import calculate_time_score
 
 MAX_GUESS_LENGTH = 200
 MAX_ATTEMPTS_PER_ROUND = 30
@@ -118,28 +114,32 @@ class HintTextAnswerType(QuizAnswerType):
         :param state: Prepared answer state to validate.
         """
         hint_state = self._get_state(state)
-        hidden = {
-            index
-            for index, character in enumerate(hint_state.solution)
-            if is_hidden_character(character)
-        }
+        hidden = set(hidden_positions(hint_state.solution))
         if not hidden or not hint_state.accepted_answers:
             raise InvalidDataError("Round requires a solution with letters to guess")
         if set(hint_state.reveal_order) != hidden or len(hint_state.reveal_order) != len(hidden):
             raise InvalidDataError("Round reveal order does not match the solution")
-        if len(hint_state.hint_offsets) >= len(hidden):
+        if len(hint_state.hint_fractions) >= len(hidden):
             raise InvalidDataError("Round hints must never reveal the whole solution")
 
-    def open_round(self, state: QuizRoundAnswerState, audio_started_at: float) -> list[float]:
+    def open_round(
+        self, state: QuizRoundAnswerState, audio_started_at: float, deadline: float
+    ) -> list[float]:
         """
-        Anchor the round's hints to the moment its track became audible.
+        Spread the round's hints over the time its track is audible.
 
         :param state: Answer state of the round that started.
         :param audio_started_at: Expected timestamp at which the round's track became audible.
+        :param deadline: Timestamp at which the round stops accepting answers.
         """
         hint_state = self._get_state(state)
+        hint_state.audio_started_at = audio_started_at
+        hint_state.deadline = deadline
         hint_state.revealed_count = 0
-        hint_state.hint_times = [audio_started_at + offset for offset in hint_state.hint_offsets]
+        audible_window = max(deadline - audio_started_at, 0.0)
+        hint_state.hint_times = [
+            audio_started_at + audible_window * fraction for fraction in hint_state.hint_fractions
+        ]
         return list(hint_state.hint_times)
 
     def reveal_hint(self, state: QuizRoundAnswerState, hint_index: int) -> bool:
@@ -150,7 +150,7 @@ class HintTextAnswerType(QuizAnswerType):
         :param hint_index: Index of the hint in the list returned by open_round.
         """
         hint_state = self._get_state(state)
-        revealed_count = min(hint_index + 1, len(hint_state.hint_offsets))
+        revealed_count = min(hint_index + 1, len(hint_state.hint_fractions))
         if revealed_count <= hint_state.revealed_count:
             return False
         hint_state.revealed_count = revealed_count
@@ -202,7 +202,7 @@ class HintTextAnswerType(QuizAnswerType):
         if is_correct:
             hint_state.solves[player.player_id] = HintTextSolve(
                 solved_at=submitted_at,
-                points=self._score(game, submitted_at),
+                points=self._score(hint_state, submitted_at),
                 first_bonus=0 if hint_state.solves else FIRST_SOLVER_BONUS,
                 # without an artist bonus there is nothing left to answer
                 artist_done=not hint_state.artist_answers,
@@ -255,7 +255,7 @@ class HintTextAnswerType(QuizAnswerType):
         hint_state = self._get_state(state)
         for player_id, solve in hint_state.solves.items():
             if player := game.players.get(player_id):
-                player.score += solve.total_points
+                player.score += _total_points(solve)
         return max(
             (
                 attempt.submitted_at
@@ -285,7 +285,7 @@ class HintTextAnswerType(QuizAnswerType):
             "allowed_typos": hint_state.allowed_typos,
             "mask": self._mask(hint_state, revealed=False),
             "revealed_count": hint_state.revealed_count,
-            "hint_count": len(hint_state.hint_offsets),
+            "hint_count": len(hint_state.hint_fractions),
             "hint_times": list(hint_state.hint_times),
             "attempts": {
                 player_id: [
@@ -309,7 +309,7 @@ class HintTextAnswerType(QuizAnswerType):
                     "artist_guess": solve.artist_guess,
                     "artist_correct": solve.artist_correct,
                     "artist_points": solve.artist_points,
-                    "total_points": solve.total_points,
+                    "total_points": _total_points(solve),
                 }
                 for player_id, solve in hint_state.solves.items()
             },
@@ -325,19 +325,11 @@ class HintTextAnswerType(QuizAnswerType):
         :param revealed: Whether protected answer data may be exposed.
         """
         hint_state = self._get_state(state)
-        hint_count = len(hint_state.hint_offsets)
-        next_hint_at = (
-            hint_state.hint_times[hint_state.revealed_count]
-            if not revealed and hint_state.revealed_count < len(hint_state.hint_times)
-            else None
-        )
         serialized_state: dict[str, SerializableType] = {
             "mask": self._mask(hint_state, revealed=revealed),
             "revealed_count": hint_state.revealed_count,
-            "hint_count": hint_count,
-            "next_hint_at": next_hint_at,
+            "hint_count": len(hint_state.hint_fractions),
             "allowed_typos": hint_state.allowed_typos,
-            "solved_count": len(hint_state.solves),
             "artist_bonus": bool(hint_state.artist_answers),
         }
         if revealed:
@@ -369,10 +361,7 @@ class HintTextAnswerType(QuizAnswerType):
         if revealed:
             serialized_state["last_answer"] = {
                 "correct": solve is not None,
-                "points": solve.total_points if solve else 0,
-                "first_bonus": solve.first_bonus if solve else 0,
-                "artist_correct": solve.artist_correct if solve else False,
-                "attempt_count": len(hint_state.attempts.get(player_id, [])),
+                "points": _total_points(solve) if solve else 0,
             }
         return serialized_state
 
@@ -406,7 +395,7 @@ class HintTextAnswerType(QuizAnswerType):
         if solve is not None:
             # a player who guessed correctly already knows the title
             serialized_state["solution"] = hint_state.solution
-            serialized_state["points"] = solve.total_points
+            serialized_state["points"] = _total_points(solve)
             serialized_state["title_points"] = solve.points
             serialized_state["first_bonus"] = solve.first_bonus
             if hint_state.artist_answers:
@@ -467,19 +456,22 @@ class HintTextAnswerType(QuizAnswerType):
         return ordered.index(player_id) + 1
 
     @staticmethod
-    def _score(game: MusicQuizGame, submitted_at: float) -> int:
+    def _score(hint_state: HintTextRoundState, submitted_at: float) -> int:
         """Return the points of a correct guess, measured from when the track became audible."""
-        if game.current_round_index is None:
-            return calculate_time_score(0, 0)
-        current_round = game.rounds[game.current_round_index]
-        started_at = current_round.started_at or submitted_at
-        answer_window = round_answer_window(game.config.answer_duration, current_round.duration)
-        audible_window = max(answer_window - ASSUMED_AUDIO_START_LATENCY, 0.0)
-        elapsed = submitted_at - started_at - ASSUMED_AUDIO_START_LATENCY
-        return calculate_time_score(elapsed, audible_window)
+        if hint_state.audio_started_at is None or hint_state.deadline is None:
+            raise InvalidDataError("Hint-text round was not opened")
+        return calculate_time_score(
+            submitted_at - hint_state.audio_started_at,
+            hint_state.deadline - hint_state.audio_started_at,
+        )
 
     def _get_state(self, state: QuizRoundAnswerState) -> HintTextRoundState:
         """Return validated hint-text round state."""
         if state.answer_type != self.answer_type or not isinstance(state, HintTextRoundState):
             raise InvalidDataError("Round state does not match the hint-text answer type")
         return state
+
+
+def _total_points(solve: HintTextSolve) -> int:
+    """Return the points of a correct title guess including all bonuses."""
+    return solve.points + solve.first_bonus + solve.artist_points

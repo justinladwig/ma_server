@@ -14,7 +14,6 @@ from music_assistant.providers.music_quiz.answer_types.hint_text import (
     HintTextArtistSubmission,
     HintTextSubmission,
 )
-from music_assistant.providers.music_quiz.constants import ASSUMED_AUDIO_START_LATENCY
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizAlreadyAnsweredError,
     MusicQuizGuessTooFastError,
@@ -32,6 +31,8 @@ from music_assistant.providers.music_quiz.models import (
 
 ANSWER_TYPE = HintTextAnswerType()
 STARTED_AT = 100.0
+AUDIO_STARTED_AT = STARTED_AT + 1.0
+DEADLINE = STARTED_AT + 31.0
 
 
 def _state(*, artist_bonus: bool = False) -> HintTextRoundState:
@@ -41,7 +42,8 @@ def _state(*, artist_bonus: bool = False) -> HintTextRoundState:
         accepted_answers=["heyjude"],
         allowed_typos=1,
         reveal_order=[0, 4, 1, 5, 2, 6, 7],
-        hint_offsets=[5.0, 10.0, 15.0],
+        # 5, 10 and 15 seconds into the 30 audible seconds
+        hint_fractions=[1 / 6, 1 / 3, 1 / 2],
         artist_answers=["The Beatles"] if artist_bonus else [],
         artist_label="The Beatles" if artist_bonus else None,
     )
@@ -69,6 +71,7 @@ def _game(state: HintTextRoundState) -> MusicQuizGame:
     )
     game.current_round_index = 0
     ANSWER_TYPE.validate_round(game, state)
+    ANSWER_TYPE.open_round(state, AUDIO_STARTED_AT, DEADLINE)
     return game
 
 
@@ -144,9 +147,8 @@ def test_hints_uncover_letters_in_reveal_order() -> None:
     state = _state()
     _game(state)
 
-    hint_times = ANSWER_TYPE.open_round(state, STARTED_AT + 1)
-    assert hint_times == [106.0, 111.0, 116.0]
-    assert ANSWER_TYPE.serialize_round(state, revealed=False)["next_hint_at"] == 106.0
+    hint_times = ANSWER_TYPE.open_round(state, AUDIO_STARTED_AT, DEADLINE)
+    assert hint_times == pytest.approx([106.0, 111.0, 116.0])
 
     assert ANSWER_TYPE.reveal_hint(state, 1) is True
     assert ANSWER_TYPE.reveal_hint(state, 0) is False
@@ -154,7 +156,6 @@ def test_hints_uncover_letters_in_reveal_order() -> None:
 
     assert hidden["mask"] == ["H", None, None, " ", "J", None, None, None]
     assert hidden["revealed_count"] == 2
-    assert hidden["next_hint_at"] == 116.0
     assert "solution" not in hidden
 
 
@@ -166,7 +167,6 @@ def test_round_serialization_reveals_the_solution_only_after_reveal() -> None:
 
     assert revealed["solution"] == "Hey Jude"
     assert revealed["mask"] == list("Hey Jude")
-    assert revealed["next_hint_at"] is None
 
 
 def test_wrong_guesses_stay_private_and_correct_guess_locks_the_player() -> None:
@@ -215,7 +215,7 @@ def test_earlier_correct_guesses_score_more_points() -> None:
     game = _game(state)
     players = list(game.players.values())
 
-    _guess(game, "alice", "Hey Jude", STARTED_AT + ASSUMED_AUDIO_START_LATENCY)
+    _guess(game, "alice", "Hey Jude", AUDIO_STARTED_AT)
     assert ANSWER_TYPE.is_round_complete(state, players) is False
     _guess(game, "bob", "Hey Jude", STARTED_AT + 16.0)
     assert ANSWER_TYPE.is_round_complete(state, players) is True
@@ -226,13 +226,7 @@ def test_earlier_correct_guesses_score_more_points() -> None:
     assert ANSWER_TYPE.serialize_public_player(state, "bob", revealed=True) == {
         "answered": True,
         "solved_rank": 2,
-        "last_answer": {
-            "correct": True,
-            "points": 550,
-            "first_bonus": 0,
-            "artist_correct": False,
-            "attempt_count": 1,
-        },
+        "last_answer": {"correct": True, "points": 550},
     }
 
 
@@ -244,7 +238,7 @@ def test_artist_bonus_is_one_guess_after_the_title() -> None:
 
     with pytest.raises(MusicQuizInvalidAnswerError):
         _guess_artist(game, "alice", "The Beatles")
-    _guess(game, "alice", "Hey Jude", STARTED_AT + ASSUMED_AUDIO_START_LATENCY)
+    _guess(game, "alice", "Hey Jude", AUDIO_STARTED_AT)
     _guess(game, "bob", "Hey Jude", STARTED_AT + 16.0)
 
     personal = ANSWER_TYPE.serialize_personal_player(state, "alice", revealed=False)
@@ -299,7 +293,7 @@ def test_remove_player_drops_guesses() -> None:
 def test_validate_round_rejects_hints_that_reveal_the_whole_title() -> None:
     """Refuse a round whose hints would uncover every letter."""
     state = _state()
-    state.hint_offsets = [1.0] * len(state.reveal_order)
+    state.hint_fractions = [0.5] * len(state.reveal_order)
 
     with pytest.raises(InvalidDataError, match="never reveal"):
         _game(state)

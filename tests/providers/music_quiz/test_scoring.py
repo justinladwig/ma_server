@@ -5,7 +5,6 @@ from __future__ import annotations
 from music_assistant.providers.music_quiz.scoring import (
     calculate_linear_scores,
     calculate_time_score,
-    round_answer_window,
 )
 
 
@@ -50,11 +49,3 @@ def test_calculate_time_score_descends_from_max_to_min() -> None:
 def test_calculate_time_score_without_window_awards_max_points() -> None:
     """Award max points when the answer window is empty."""
     assert calculate_time_score(5, 0) == 1000
-
-
-def test_round_answer_window_is_capped_by_track_duration() -> None:
-    """Never keep a round open longer than its track plays."""
-    assert round_answer_window(30, 180.0) == 30.0
-    assert round_answer_window(30, 12.5) == 12.5
-    assert round_answer_window(30, None) == 30.0
-    assert round_answer_window(30, 0) == 30.0

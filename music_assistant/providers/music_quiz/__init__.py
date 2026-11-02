@@ -40,8 +40,8 @@ The public game state is guest-safe by construction. Common state contains:
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
   current song, year, correct placement and bonus answers remain protected.
   Hint-text exposes the title ``mask`` (unrevealed letters as null, other
-  characters always shown) and ``next_hint_at``; the title, its reveal order
-  and every guess text remain protected.
+  characters always shown); the title, its reveal order and every guess text
+  remain protected.
 - reveal/finished rounds additionally expose common ``answer_label``,
   ``track_uri``, ``image_url``, ``duration``, ``audio_started_at`` and
   ``ended_at`` fields. ``audio_started_at`` is when the round's track became
@@ -114,11 +114,6 @@ from music_assistant.providers.music_quiz.answer_types.base import (
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceSubmission,
 )
-from music_assistant.providers.music_quiz.constants import (
-    ASSUMED_AUDIO_START_LATENCY,
-    MAX_REPORTED_AUDIO_START_LATENCY,
-    MIN_REPORTED_AUDIO_START_LATENCY,
-)
 from music_assistant.providers.music_quiz.errors import (
     TRANSLATION_OWNER,
     MusicQuizGameActiveError,
@@ -171,7 +166,6 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     QuizType,
     is_supported_source,
 )
-from music_assistant.providers.music_quiz.scoring import round_answer_window
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -207,6 +201,14 @@ REPLAY_AUTO_START_SECONDS = 30
 # minimum time players get to see the reveal/scoreboard before the game
 # advances, even when the round track has (almost) finished playing
 MIN_REVEAL_SECONDS = 10.0
+
+# a track is not audible the instant playback is commanded: the stream still has to be
+# resolved, encoded and buffered by the receiver. ASSUMED_AUDIO_START_LATENCY is what we
+# assume when the player never reported a real position, while the MIN/MAX pair bounds a
+# player-reported start relative to the play command so a stale report is discarded.
+ASSUMED_AUDIO_START_LATENCY = 1.0
+MIN_REPORTED_AUDIO_START_LATENCY = -1.0
+MAX_REPORTED_AUDIO_START_LATENCY = 10.0
 
 
 class _PlaybackPreference(TypedDict):
@@ -990,6 +992,7 @@ class MusicQuizPlugin(PluginProvider):
             hint_times = answer_type.open_round(
                 next_round.answer_state,
                 started_at + ASSUMED_AUDIO_START_LATENCY,
+                started_at + answer_window,
             )
             self._schedule_hint(game, round_index, hint_times, 0, started_at)
             self._prefetch_round(round_index + 1)
@@ -2201,7 +2204,10 @@ def _has_active_players(game: MusicQuizGame, now: float) -> bool:
 
 def _answer_window(game: MusicQuizGame, game_round: MusicQuizRound) -> float:
     """Return the effective answering window of a round in seconds."""
-    return round_answer_window(game.config.answer_duration, game_round.duration)
+    answer_window = float(game.config.answer_duration)
+    if game_round.duration and game_round.duration > 0:
+        answer_window = min(answer_window, game_round.duration)
+    return answer_window
 
 
 def _host_round(
